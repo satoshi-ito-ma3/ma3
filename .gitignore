@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 環境変数・鍵（APIキーを絶対にコミットしない）
+.env
+*.key
+
+# SQLite データベース実体
+*.db
+*.sqlite
+*.sqlite3
+
+# OS / エディタ
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

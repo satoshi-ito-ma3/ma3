@@ -1,0 +1,8 @@
+# MA³ — Mortal Agent Framework 実装スタック
+# バージョンは最初のコミット時点の意思表示。動かしながら固定していく。
+
+langgraph
+langchain
+langchain-anthropic   # Claude を推論エンジンに
+streamlit             # 観察 UI
+# sqlite3 は Python 標準ライブラリ（追加インストール不要）
