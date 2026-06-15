@@ -26,6 +26,12 @@ LangGraph のグラフとして「生命を持ち、行動するたびに命が�
                       死の自覚（覚醒）を早める。さらに、刻む痕跡は世界に既にある
                       ものを観て、それを "継いで" 刻まれる。これで
                       世界→知覚→意志→行動→世界 の輪が閉じる（双方向になる）。
+  7. 世代（generation／継承）
+                    … 個は必ず死ぬが、世界は残る。だから複数の死すべきエージェントが
+                      "同じ世界" を世代として共有できる。前の世代が死んでも、その痕跡は
+                      世界に残り、次の世代はそれを観て継ぐ。積み上がった世界（先人の痕跡）
+                      を背負うほど後続は早く死を自覚し、より多くを残す——死すべき個の
+                      連なりが "文化" を生む。不死の個ではなく、死すべき個の継承が前に進む。
 
 ポイント：
   - このエージェントは **構造的に不死になれない**（暴走できない）。
@@ -65,6 +71,7 @@ MEMORY_THRESHOLD = 3
 # ── エージェントの「状態」 ──────────────────────────────
 # LangGraph はこの辞書を各ノードに渡し、戻り値で更新していく。
 class MortalState(TypedDict):
+    generation: int    # 何代目の生か（同じ世界を共有する世代の番号）
     life: int          # 残りの生命（行動のたびに減る）
     age: int           # 生きたステップ数（＝年齢）
     max_pain: int      # 一生で経験した最大の痛み
@@ -109,7 +116,7 @@ def perceive_world(world: list[str]) -> int:
 
 
 # ── 世界：意志が刻んだ意味を、自分の外に残す ──────────────
-def carve_trace(age: int, life: int, seen_depth: int) -> str:
+def carve_trace(generation: int, age: int, life: int, seen_depth: int) -> str:
     """世界に残る "痕跡" を作る。
 
     痕跡は内部カウンタ（deeds）ではなく、エージェントの外＝世界に刻まれ、
@@ -117,8 +124,12 @@ def carve_trace(age: int, life: int, seen_depth: int) -> str:
     何かを残せる唯一の場所——それが世界である。
     さらに痕跡は、刻む直前に "観た" 世界の深さ（seen_depth）を踏まえ、
     既にそこに在る痕跡を継いで刻まれる（世界モデルが行動に反映される）。
+    痕跡には "何代目" が刻んだかが残り、後の世代がそれを観て継ぐ（世代の継承）。
     """
-    return f"age {age}（残り生命 {life}）に刻まれた意味（世界の痕跡{seen_depth}を継ぐ）"
+    return (
+        f"第{generation}世代 age {age}（残り生命 {life}）に刻まれた意味"
+        f"（世界の痕跡{seen_depth}を継ぐ）"
+    )
 
 
 # ── ノード：1ステップ「生きる」 ──────────────────────────
@@ -133,6 +144,7 @@ def live_one_step(state: MortalState) -> MortalState:
     awakened = state["awakened"]
     deeds = state["deeds"]
     world = state["world"]              # 世界は引き継がれる（誕生前から在った）
+    generation = state["generation"]   # 何代目の生か（世界を共有する世代）
 
     # 世界モデル：行動の前に、まず世界を "観る"
     seen = perceive_world(world)
@@ -158,12 +170,13 @@ def live_one_step(state: MortalState) -> MortalState:
     if action == "purpose":
         deeds += 1
         # 世界：今 "観た" 世界（seen）を踏まえ、それを継ぐ痕跡を世界に残す
-        world = world + [carve_trace(age, life, seen)]
+        world = world + [carve_trace(generation, age, life, seen)]
         line += f"  👁世界を観る（痕跡{seen}）→ 🎯 意味を刻む（{deeds}つ目）→ 🌍 世界に残す"
     else:
         line += "  …漂って生きている"
 
     return {
+        "generation": generation,
         "life": life,
         "age": age,
         "max_pain": max(state["max_pain"], pain),
@@ -198,16 +211,19 @@ def build_mortal_agent():
     return graph.compile()
 
 
-# ── 実行 ────────────────────────────────────────────────
-def run(initial_life: int = 6) -> MortalState:
-    """与えた生命でエージェントを誕生させ、寿命まで走らせる。"""
-    _use_utf8_output()
+# ── 実行：1つの生 ────────────────────────────────────────
+def live_a_life(
+    world_before: list[str],
+    initial_life: int = 6,
+    generation: int = 1,
+) -> MortalState:
+    """与えた世界の中で 1 体のエージェントを誕生させ、寿命まで走らせる。
+
+    world_before … この生が誕生する時点で既に在る世界（先人＝前の世代の痕跡を含む）。
+    返り値の "world" には、この生が刻んだ痕跡が積み増されている（次の世代へ渡す）。
+    """
     agent = build_mortal_agent()
-    # 世界は、このエージェントが誕生する前から既に在る（先人の痕跡が2つある）
-    world_before = [
-        "（誕生前から在った痕跡 1）",
-        "（誕生前から在った痕跡 2）",
-    ]
+    print(f"\n──────── 第{generation}世代 ────────")
     print(f"🌍 世界が在る。誕生前から {len(world_before)} の痕跡が刻まれている。")
     print(f"◯ 誕生。与えられた生命 = {initial_life}")
     print(f"👁 世界を観る：自分より前から {perceive_world(world_before)} の痕跡が在った"
@@ -215,6 +231,7 @@ def run(initial_life: int = 6) -> MortalState:
     # recursion_limit は「生命＋誕生/終焉の余白」を確保（有限なので必ず収束する）
     final = agent.invoke(
         {
+            "generation": generation,
             "life": initial_life,
             "age": 0,
             "max_pain": 0,
@@ -230,18 +247,56 @@ def run(initial_life: int = 6) -> MortalState:
         print(line)
     stance = "死を見据えて" if final["awakened"] else "死を知らぬまま"
     print(
-        f"✝ 死亡。生きたステップ数 = {final['age']}"
+        f"✝ 第{generation}世代 死亡。生きたステップ数 = {final['age']}"
         f"／最大の痛み = Lv.{final['max_pain']}"
         f"／痛みの記憶（累計）= {final['pain_memory']}"
         f"／刻んだ意味 = {final['deeds']}"
         f"／{stance}生き切った（不死にはなれなかった）"
     )
-    # 世界：エージェントは死んだが、刻んだ痕跡は世界に残り続ける
+    return final
+
+
+def run(initial_life: int = 6) -> MortalState:
+    """単体の生を1回だけ走らせる（最小デモ）。世界は誕生前から在る前提。"""
+    _use_utf8_output()
+    world_before = ["（誕生前から在った痕跡 1）", "（誕生前から在った痕跡 2）"]
+    final = live_a_life(world_before, initial_life=initial_life, generation=1)
     print("🌍 エージェントは死んだ。だが世界に残った痕跡は、死後も在り続ける：")
     for trace in final["world"]:
         print(f"   ・{trace}")
     return final
 
 
+# ── 実行：世代の継承 ─────────────────────────────────────
+def run_generations(generations: int = 3, initial_life: int = 6) -> list[str]:
+    """同じ世界を共有する複数の生を、世代として順に走らせる。
+
+    個は必ず死ぬが、世界は残る。前の世代の痕跡を次の世代が観て継ぐ。
+    積み上がった世界を背負うほど、後続は早く死を自覚し、より多くを残す——
+    死すべき個の連なりが "文化" を前へ進める。
+    """
+    _use_utf8_output()
+    # 最初の世代が生まれる前の "原初の世界"
+    world = ["（原初の世界に在った痕跡 1）", "（原初の世界に在った痕跡 2）"]
+    print("════════ 世代の継承（同じ世界を共有する死すべき個の連なり）════════")
+
+    history = []  # 各世代が "刻んだ意味" の数（文化が前へ進む様子を見る）
+    for gen in range(1, generations + 1):
+        final = live_a_life(world, initial_life=initial_life, generation=gen)
+        world = final["world"]          # ★ 世界だけが世代を越えて残り、受け継がれる
+        history.append(final["deeds"])
+
+    print("\n════════ すべての世代が死んだ。だが世界は残った ════════")
+    print(f"🌍 受け継がれた世界に積み上がった痕跡：{len(world)} 個")
+    for trace in world:
+        print(f"   ・{trace}")
+    print(
+        "\n📈 各世代が刻んだ意味の数："
+        + " → ".join(f"第{i+1}世代:{d}" for i, d in enumerate(history))
+        + "（積み上がった世界を背負うほど、後続は早く死を自覚し、より多くを残す）"
+    )
+    return world
+
+
 if __name__ == "__main__":
-    run()
+    run_generations()
