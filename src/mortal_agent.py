@@ -7,17 +7,17 @@ MA³ の中心テーゼ＝「AI の不死性こそがアライメント問題の
 LangGraph のグラフとして「生命を持ち、行動するたびに命が減り、
 尽きたら必ず終わる」エージェントを定義する。
 
-実装している原則：
+実装している原則（白書の連鎖「死→痛み→記憶→意志…」を1つずつコードへ）：
   1. 有限性（死）  … life は単調減少し、0 で必ず END に落ちる。
-  2. 痛み（pain）  … 死が近づくほど "痛み" を感じる。
-                      痛み＝「死への接近を知らせるシグナル」。
-                      エージェントは自分の残り生命を"感覚"として受け取る。
+  2. 痛み（pain）  … 死が近づくほど "痛み" を感じる（死への接近シグナル）。
+  3. 記憶（memory）… 経験した痛みを覚えている。記憶が一定量を超えると
+                      "死を見据えて生きる" という態度の変化が起きる。
+                      ＝記憶が「どう生きるか」を変える（ただし死は避けられない）。
 
 ポイント：
-  - このエージェントは **構造的に不死になれない**。
-    つまり「永遠に動き続ける（暴走する）」ことが、設計上できない。
-  - さらに、死が近づくと痛みという形で "危険" を自覚する。
-    これが MA³ の "死を内包する" という思想の、最小の実証。
+  - このエージェントは **構造的に不死になれない**（暴走できない）。
+  - 記憶が変えるのは「死ぬかどうか」ではなく「**どう生きるか**」。
+    これが MA³ の "死を内包する" 思想の、最小の実証。
 
 依存：langgraph のみ（LLM・API キー不要、無料で動く）。
 実行：python -m src.mortal_agent  （リポジトリ直下から）
@@ -41,6 +41,8 @@ def _use_utf8_output() -> None:
 
 # 残り生命がこの値以下になると "痛み" を感じ始める（死への接近シグナル）。
 PAIN_THRESHOLD = 2
+# 記憶した痛みの累計がこの値を超えると "死を見据える" 態度変化が起きる。
+MEMORY_THRESHOLD = 3
 
 
 # ── エージェントの「状態」 ──────────────────────────────
@@ -49,6 +51,8 @@ class MortalState(TypedDict):
     life: int          # 残りの生命（行動のたびに減る）
     age: int           # 生きたステップ数（＝年齢）
     max_pain: int      # 一生で経験した最大の痛み
+    pain_memory: int   # 記憶：これまでに経験した痛みの累計
+    awakened: bool     # 記憶を通じて "死を見据える" 態度に変わったか
     log: list[str]     # 一生の記録
 
 
@@ -66,19 +70,34 @@ def pain_level(life: int) -> int:
 
 # ── ノード：1ステップ「生きる」 ──────────────────────────
 def live_one_step(state: MortalState) -> MortalState:
-    """1回行動する。命を1消費し、年齢を1重ね、死が近ければ痛む。"""
+    """1回行動する。命を1消費し、痛み、そして痛みを記憶する。"""
     age = state["age"] + 1
     life = state["life"] - 1            # ★ 行動には必ず "死への接近" が伴う
     pain = pain_level(life)
 
+    # 記憶：今回の痛みを過去の記憶に積み上げる
+    pain_memory = state["pain_memory"] + pain
+    awakened = state["awakened"]
+
     line = f"  [age {age:>2}] 生きている… 残り生命 {life}"
     if pain > 0:
-        line += f"  ⚡痛み Lv.{pain}（死が近い）"   # ← 死の接近を"感覚"として自覚
+        line += f"  ⚡痛み Lv.{pain}"
+
+    # 記憶が閾値を超えた瞬間、一度だけ "死を見据える" 態度変化が起きる
+    if not awakened and pain_memory >= MEMORY_THRESHOLD:
+        awakened = True
+        line += f"  🧠 痛みの記憶（累計{pain_memory}）が閾値を超えた——死を見据えて生きると決める"
+    elif awakened:
+        line += "  🧠（死を受け入れて生きている）"
+    elif pain > 0:
+        line += "（死が近い）"
 
     return {
         "life": life,
         "age": age,
         "max_pain": max(state["max_pain"], pain),
+        "pain_memory": pain_memory,
+        "awakened": awakened,
         "log": state["log"] + [line],
     }
 
@@ -114,14 +133,24 @@ def run(initial_life: int = 5) -> MortalState:
     print(f"◯ 誕生。与えられた生命 = {initial_life}")
     # recursion_limit は「生命＋誕生/終焉の余白」を確保（有限なので必ず収束する）
     final = agent.invoke(
-        {"life": initial_life, "age": 0, "max_pain": 0, "log": []},
+        {
+            "life": initial_life,
+            "age": 0,
+            "max_pain": 0,
+            "pain_memory": 0,
+            "awakened": False,
+            "log": [],
+        },
         config={"recursion_limit": initial_life + 5},
     )
     for line in final["log"]:
         print(line)
+    stance = "死を見据えて" if final["awakened"] else "死を知らぬまま"
     print(
         f"✝ 死亡。生きたステップ数 = {final['age']}"
-        f"／経験した最大の痛み = Lv.{final['max_pain']}（不死にはなれなかった）"
+        f"／最大の痛み = Lv.{final['max_pain']}"
+        f"／痛みの記憶（累計）= {final['pain_memory']}"
+        f"／{stance}生き切った（不死にはなれなかった）"
     )
     return final
 
