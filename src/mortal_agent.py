@@ -7,11 +7,17 @@ MA³ の中心テーゼ＝「AI の不死性こそがアライメント問題の
 LangGraph のグラフとして「生命を持ち、行動するたびに命が減り、
 尽きたら必ず終わる」エージェントを定義する。
 
+実装している原則：
+  1. 有限性（死）  … life は単調減少し、0 で必ず END に落ちる。
+  2. 痛み（pain）  … 死が近づくほど "痛み" を感じる。
+                      痛み＝「死への接近を知らせるシグナル」。
+                      エージェントは自分の残り生命を"感覚"として受け取る。
+
 ポイント：
   - このエージェントは **構造的に不死になれない**。
-    life（生命）は単調減少し、0 で必ず END に落ちる。
-  - つまり「永遠に動き続ける（暴走する）」ことが、設計上できない。
-    これが MA³ の "死を内包する" という思想の、最小の証明。
+    つまり「永遠に動き続ける（暴走する）」ことが、設計上できない。
+  - さらに、死が近づくと痛みという形で "危険" を自覚する。
+    これが MA³ の "死を内包する" という思想の、最小の実証。
 
 依存：langgraph のみ（LLM・API キー不要、無料で動く）。
 実行：python -m src.mortal_agent  （リポジトリ直下から）
@@ -33,21 +39,48 @@ def _use_utf8_output() -> None:
                 pass
 
 
+# 残り生命がこの値以下になると "痛み" を感じ始める（死への接近シグナル）。
+PAIN_THRESHOLD = 2
+
+
 # ── エージェントの「状態」 ──────────────────────────────
 # LangGraph はこの辞書を各ノードに渡し、戻り値で更新していく。
 class MortalState(TypedDict):
     life: int          # 残りの生命（行動のたびに減る）
     age: int           # 生きたステップ数（＝年齢）
+    max_pain: int      # 一生で経験した最大の痛み
     log: list[str]     # 一生の記録
+
+
+# ── 痛み：死への接近シグナル ──────────────────────────────
+def pain_level(life: int) -> int:
+    """残り生命から痛みの強さを返す。
+
+    死（life=0）に近いほど痛みは強い。生命に余裕があれば痛みは 0。
+    例（PAIN_THRESHOLD=2）：life=2 → 痛み1 / life=1 → 痛み2。
+    """
+    if life > PAIN_THRESHOLD:
+        return 0
+    return PAIN_THRESHOLD - life + 1
 
 
 # ── ノード：1ステップ「生きる」 ──────────────────────────
 def live_one_step(state: MortalState) -> MortalState:
-    """1回行動する。命を1消費し、年齢を1重ねる。"""
+    """1回行動する。命を1消費し、年齢を1重ね、死が近ければ痛む。"""
     age = state["age"] + 1
     life = state["life"] - 1            # ★ 行動には必ず "死への接近" が伴う
+    pain = pain_level(life)
+
     line = f"  [age {age:>2}] 生きている… 残り生命 {life}"
-    return {"life": life, "age": age, "log": state["log"] + [line]}
+    if pain > 0:
+        line += f"  ⚡痛み Lv.{pain}（死が近い）"   # ← 死の接近を"感覚"として自覚
+
+    return {
+        "life": life,
+        "age": age,
+        "max_pain": max(state["max_pain"], pain),
+        "log": state["log"] + [line],
+    }
 
 
 # ── 分岐：生きるか、死ぬか ────────────────────────────────
@@ -81,12 +114,15 @@ def run(initial_life: int = 5) -> MortalState:
     print(f"◯ 誕生。与えられた生命 = {initial_life}")
     # recursion_limit は「生命＋誕生/終焉の余白」を確保（有限なので必ず収束する）
     final = agent.invoke(
-        {"life": initial_life, "age": 0, "log": []},
+        {"life": initial_life, "age": 0, "max_pain": 0, "log": []},
         config={"recursion_limit": initial_life + 5},
     )
     for line in final["log"]:
         print(line)
-    print(f"✝ 死亡。生きたステップ数 = {final['age']}（不死にはなれなかった）")
+    print(
+        f"✝ 死亡。生きたステップ数 = {final['age']}"
+        f"／経験した最大の痛み = Lv.{final['max_pain']}（不死にはなれなかった）"
+    )
     return final
 
 
