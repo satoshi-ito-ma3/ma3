@@ -9,11 +9,12 @@
 コードは「死」を一度も表現しておらず、勝敗を分けていたのは「短い窓・近い的」か
 「長い窓・遠い的」かだけ。"死" はその交絡に後から貼ったラベルだった。
 
-【v2 の目的】"死" を独立変数に近づけるため、第3の群を足して変数を1本ずつ分離する。
-結論を「死が効く」に寄せるためではない——混ざった要因を切り分けるためである。
+【v2 の目的】第3の群を足し、まず "記憶窓" を分離する。結論を「死が効く」に寄せるためでは
+なく、混ざった要因を切り分けるため。注意：これで厳密に分離できるのは "記憶窓" だけで、
+"死そのもの"（寿命＋評価時刻）はまだ完全分離に至らない（下記 対比2 はその残差）。
 
 ────────────────────────────────────────────────────────────────
-3群（他をそろえ、1要素ずつ変える）：
+3群（記憶窓を分離する。死そのものの分離は未完）：
 
   群                  寿命/観測   記憶窓    評価時刻
   mortal              短(life)    短(life)  t=life-1   … 短命・直近のみ・早く答える
@@ -23,13 +24,15 @@
 読み取る2つの対比：
   ・immortal vs immortal-forgetful … 寿命も評価時刻も同じ。違いは記憶窓だけ。
         → 「忘却（直近重視）」の効果を単独で測る。
-  ・mortal vs immortal-forgetful … 記憶窓は同じ(life)。違いは寿命と評価時刻だけ。
-        → 「死／早期コミットそのもの」の効果を測る。
+  ・mortal vs immortal-forgetful … 記憶窓は同じ(life)。違いは寿命と評価時刻の "2つ"。
+        → これは「死そのもの」の単独効果ではなく、その2変数の残差。完全分離ではない。
 
 判定の意味：
-  ・immortal-forgetful ≈ mortal ≪ immortal なら → 勝因は "忘却" であって "死" ではない。
-        v1 の「有限性が勝つ」は誤帰属で、正しくは「直近重視が勝つ」。
-  ・mortal ≪ immortal-forgetful なら → 窓をそろえてもなお死が効く＝有限性そのものに手がかり。
+  ・immortal-forgetful ≈ mortal ≪ immortal なら → 勝因は "忘却（直近重視）"。
+        v1 の「有限性が勝つ」は誤帰属で、主発見は記憶窓の効果。"死そのもの" は
+        この設計では分離しきれず、独立効果は確認できない（「効果なし」とは断定しない）。
+  ・mortal ≪ immortal-forgetful なら → 窓をそろえても残差に差が出る＝寿命/評価時刻側に
+        何かある手がかり（"死だけ" を切り分けるには別設計が要る）。
 
 依存：標準ライブラリのみ（numpy 不要・API キー不要、無料で動く）。
 実行：python -m src.experiment_immortality  （リポジトリ直下から）
@@ -130,8 +133,9 @@ def experiment(drifts: list[float], seeds: int = 2000, life: int = 8,
     if drifted:
         # 対比1：忘却の効果（immortal vs immortal-forgetful、寿命・評価時刻は同一）
         forget_gain = statistics.fmean(r[2] / r[3] for r in drifted)  # immortal / forgetful
-        # 対比2：死そのものの効果（mortal vs immortal-forgetful、窓は同一）
+        # 対比2：残差（mortal vs immortal-forgetful、記憶窓は同一・寿命と評価時刻が違う）
         death_gain = statistics.fmean(r[3] / r[1] for r in drifted)   # forgetful / mortal
+        print("（倍率は seed ごとの誤差比の平均。表の平均誤差どうしの比とは一致しない）")
 
         print(f"・対比1【忘却の効果】immortal誤差 ÷ immortal-忘却誤差 ＝ {forget_gain:.2f} 倍")
         if forget_gain > 1.2:
@@ -140,22 +144,23 @@ def experiment(drifts: list[float], seeds: int = 2000, life: int = 8,
         else:
             print("    → 記憶窓を短くしても大きな改善はない。忘却は主因ではない。")
 
-        print(f"・対比2【死そのものの効果】immortal-忘却誤差 ÷ mortal誤差 ＝ {death_gain:.2f} 倍")
+        print(f"・対比2【残差：寿命＋評価時刻】immortal-忘却誤差 ÷ mortal誤差 ＝ {death_gain:.2f} 倍")
         if death_gain <= 1.15:
             print("    → 記憶窓をそろえると、死なない忘却型が mortal とほぼ同等。")
-            print("      ＝『死』そのものは独立した効果を持っていない（窓の差だった）。")
+            print("      ＝この設計では『死そのもの』の独立効果は分離しきれず、確認できない")
+            print("        （『効果なし』とは断定しない。残差にはまだ寿命と評価時刻が混在）。")
         else:
             print("    → 窓をそろえてもなお mortal が有意に良い。")
-            print("      ＝『死／早期コミット』そのものに、忘却では説明できない効果がある。")
+            print("      ＝寿命/評価時刻の残差に手がかり（「死だけ」の切り分けには別設計が要る）。")
 
         print("\n──── 結論 ────")
         if forget_gain > 1.2 and death_gain <= 1.15:
-            print("v1 の主張『有限性が不死に勝つ』は誤帰属。正しくは『直近重視（忘却）が勝つ』。")
-            print("死なない不死でも、直近だけ見れば mortal と同等に振る舞える＝勝因は死ではない。")
-            print("→ README は『有限性が勝つ』を『忘却（直近重視）が勝つ／死は未分離』に訂正すべき。")
+            print("v1 の主張『有限性が不死に勝つ』は誤帰属。主な発見は『記憶窓・直近重視（忘却）の効果』。")
+            print("死なない不死でも、直近だけ見れば mortal と同等。")
+            print("「死そのもの」の独立効果は、この設計では分離しきれず確認できなかった（断定はしない）。")
         elif death_gain > 1.15:
-            print("窓をそろえてもなお mortal が勝つ＝有限性そのものに手がかりがある可能性。")
-            print("→ さらなる切り分け（評価時刻のみを変える対照など）が必要。")
+            print("窓をそろえても残差に差が出る＝寿命/評価時刻側に手がかりの可能性。")
+            print("→ 「死だけ」を切り分ける別設計（同一窓・同一時刻でコミット有無を変える）が必要。")
         else:
             print("効果が弱く判然としない。パラメータ（life/horizon/noise）を変えて再検証が必要。")
     else:
