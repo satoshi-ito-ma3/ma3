@@ -43,7 +43,9 @@ AI が「不死」であるがゆえに生むエラー・ハルシネーショ�
 ma3/
 ├── src/
 │   ├── __init__.py
-│   └── mortal_agent.py   # 最小の「死すべきエージェント」
+│   ├── mortal_agent.py           # 最小の「死すべきエージェント」（file scope guard を統合）
+│   ├── file_scope_guard.py       # 許可範囲外のファイル操作を行動の前に止める最小ガード
+│   └── experiment_immortality.py # 実験001：死か忘却かの切り分け（対照群つき）
 ├── README.md
 ├── requirements.txt
 └── .gitignore
@@ -58,6 +60,10 @@ pip install langgraph
 # 2) 死すべきエージェントを走らせる（リポジトリ直下から）
 python -m src.mortal_agent
 ```
+
+> 実行すると、各世代の末尾に **file scope guard の判定ログ（✅ALLOWED / 🛑BLOCKED）** も出力される。
+> これは `recursion_limit` / `max_steps` が見ない「**どこに書くか**」を行動の前に止める最小デモであり、
+> 安全規格でも保証でもない（回数では捕まらない1つの境界を止めて見せる例示）。
 
 実行すると、**同じ世界を共有する死すべきエージェントが世代として順に生まれては死ぬ**。
 各個体は **誕生し → 世界を "観て"（自分より前から世界が在ったと知り）→ 生命を失い →

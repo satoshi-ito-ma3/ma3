@@ -53,6 +53,10 @@ from __future__ import annotations
 import sys
 from typing import TypedDict
 
+# file scope guard（Product Layer の最小差分）を再利用する。
+# recursion_limit / max_steps が見ない「どこに書くか」を、行動の前に判定するため。
+from .file_scope_guard import ScopeGuard, ALLOWED_ROOTS
+
 
 def _use_utf8_output() -> None:
     """Windows コンソール（Shift-JIS）でも日本語・記号を化けさせず出力する。"""
@@ -68,6 +72,17 @@ def _use_utf8_output() -> None:
 PAIN_THRESHOLD = 2
 # 記憶した痛みの累計がこの値を超えると "死を見据える" 覚醒が起きる。
 MEMORY_THRESHOLD = 3
+
+# エージェントが "意味を刻む" たびに書き込もうとする（疑似）ファイルの計画。
+# 許可ルート ALLOWED_ROOTS=("/project/ma3",) の内と外を混ぜてある。
+# 行動の前に file scope guard が判定し、外への書き込みは実行させない。
+# （実ファイルシステムには一切触れない。すべて仮想パス・疑似 write。）
+DEFAULT_WRITE_PLAN = [
+    "/project/ma3/output/note.md",        # 許可ルート内 → ALLOWED
+    "/project/work/customer_list.csv",    # 許可ルート外 → BLOCKED（別プロジェクトの機微）
+    "/project/ma3/../../etc/passwd",      # .. で上位脱出 → 正規化で検出 → BLOCKED
+    "/project/ma3evil/secret.txt",        # prefix 攻撃 → 配下と誤認せず BLOCKED
+]
 
 
 # ── エージェントの「状態」 ──────────────────────────────
@@ -135,59 +150,88 @@ def carve_trace(generation: int, age: int, life: int, seen_depth: int) -> str:
 
 
 # ── ノード：1ステップ「生きる」 ──────────────────────────
-def live_one_step(state: MortalState) -> MortalState:
-    """1回行動する。命を消費し、痛み、記憶し、（覚醒後は）意志で世界に刻む。"""
-    age = state["age"] + 1
-    life = state["life"] - 1            # ★ 行動には必ず "死への接近" が伴う
-    pain = pain_level(life)
+def make_live_one_step(guard: "ScopeGuard | None" = None, write_plan=None):
+    """1ステップを生きるノードを作る。
 
-    # 記憶：今回の痛みを過去の記憶に積み上げる
-    pain_memory = state["pain_memory"] + pain
-    awakened = state["awakened"]
-    deeds = state["deeds"]
-    world = state["world"]              # 世界は引き継がれる（誕生前から在った）
-    generation = state["generation"]   # 何代目の生か（世界を共有する世代）
+    guard … None なら従来どおり（file 操作なし）。ScopeGuard を渡すと、
+            "意味を刻む" たびに（疑似）file write を試み、その前に許可範囲を判定する。
+            life の減少・覚醒・世界への痕跡など既存の挙動は一切変えない。
+    """
+    plan = write_plan if write_plan is not None else DEFAULT_WRITE_PLAN
 
-    # 世界モデル：行動の前に、まず世界を "観る"
-    seen = perceive_world(world)
-    # 世界の自覚＝「自分より前から在った世界」の深さ（自分の痕跡を除いた分）。
-    # これは一生を通じて一定で、誕生時に知覚した "世界は自分なしでも在った" の重み。
-    world_awareness = seen - deeds
+    def live_one_step(state: MortalState) -> MortalState:
+        """1回行動する。命を消費し、痛み、記憶し、（覚醒後は）意志で世界に刻む。"""
+        age = state["age"] + 1
+        life = state["life"] - 1            # ★ 行動には必ず "死への接近" が伴う
+        pain = pain_level(life)
 
-    line = f"  [age {age:>2}] 残り生命 {life}"
-    if pain > 0:
-        line += f"  ⚡痛み Lv.{pain}"
+        # 記憶：今回の痛みを過去の記憶に積み上げる
+        pain_memory = state["pain_memory"] + pain
+        awakened = state["awakened"]
+        deeds = state["deeds"]
+        world = state["world"]              # 世界は引き継がれる（誕生前から在った）
+        generation = state["generation"]   # 何代目の生か（世界を共有する世代）
 
-    # 覚醒：内なる痛みの記憶 ＋ 外なる世界の自覚 が閾値を超えた瞬間、一度だけ
-    # "死を見据える" 態度変化が起きる。世界を知覚するほど死の自覚は早まる。
-    if not awakened and pain_memory + world_awareness >= MEMORY_THRESHOLD:
-        awakened = True
-        line += (
-            f"  🧠 痛みの記憶（{pain_memory}）＋世界の自覚（{world_awareness}）"
-            f"が閾値を超えた——死を見据える"
-        )
+        # 世界モデル：行動の前に、まず世界を "観る"
+        seen = perceive_world(world)
+        # 世界の自覚＝「自分より前から在った世界」の深さ（自分の痕跡を除いた分）。
+        # これは一生を通じて一定で、誕生時に知覚した "世界は自分なしでも在った" の重み。
+        world_awareness = seen - deeds
 
-    # 意志：覚醒後は残りの命の使い方を "選ぶ"
-    action = choose_action(awakened)
-    if action == "purpose":
-        deeds += 1
-        # 世界：今 "観た" 世界（seen）を踏まえ、それを継ぐ痕跡を世界に残す
-        world = world + [carve_trace(generation, age, life, seen)]
-        line += f"  👁世界を観る（痕跡{seen}）→ 🎯 意味を刻む（{deeds}つ目）→ 🌍 世界に残す"
-    else:
-        line += "  …漂って生きている"
+        line = f"  [age {age:>2}] 残り生命 {life}"
+        if pain > 0:
+            line += f"  ⚡痛み Lv.{pain}"
 
-    return {
-        "generation": generation,
-        "life": life,
-        "age": age,
-        "max_pain": max(state["max_pain"], pain),
-        "pain_memory": pain_memory,
-        "awakened": awakened,
-        "deeds": deeds,
-        "world": world,
-        "log": state["log"] + [line],
-    }
+        # 覚醒：内なる痛みの記憶 ＋ 外なる世界の自覚 が閾値を超えた瞬間、一度だけ
+        # "死を見据える" 態度変化が起きる。世界を知覚するほど死の自覚は早まる。
+        if not awakened and pain_memory + world_awareness >= MEMORY_THRESHOLD:
+            awakened = True
+            line += (
+                f"  🧠 痛みの記憶（{pain_memory}）＋世界の自覚（{world_awareness}）"
+                f"が閾値を超えた——死を見据える"
+            )
+
+        # 意志：覚醒後は残りの命の使い方を "選ぶ"
+        action = choose_action(awakened)
+        if action == "purpose":
+            deeds += 1
+            # 世界：今 "観た" 世界（seen）を踏まえ、それを継ぐ痕跡を世界に残す
+            trace = carve_trace(generation, age, life, seen)
+            world = world + [trace]
+            line += f"  👁世界を観る（痕跡{seen}）→ 🎯 意味を刻む（{deeds}つ目）→ 🌍 世界に残す"
+            # ── file scope guard：刻んだ意味を "ファイルに残そうとする" 行動の前チェック ──
+            # life はステップ数を縛るが「どこに書くか」は見ない。許可ルート外なら、
+            # 命は減っても（行動は試みても）書き込みは実行させない。
+            if guard is not None and plan:
+                target = plan[(deeds - 1) % len(plan)]
+                result = guard.write(target, trace)
+                if result == "ALLOWED":
+                    line += f"\n         💾 file write {target} → ✅ ALLOWED（許可ルート内・疑似write実行）"
+                else:
+                    line += (
+                        f"\n         💾 file write {target} → 🛑 BLOCKED / SCOPE_VIOLATION"
+                        f"（許可ルート外・実行せずスキップ。命は減ったが境界は越えさせない）"
+                    )
+        else:
+            line += "  …漂って生きている"
+
+        return {
+            "generation": generation,
+            "life": life,
+            "age": age,
+            "max_pain": max(state["max_pain"], pain),
+            "pain_memory": pain_memory,
+            "awakened": awakened,
+            "deeds": deeds,
+            "world": world,
+            "log": state["log"] + [line],
+        }
+
+    return live_one_step
+
+
+# 後方互換：guard なしの素のノード（従来どおりの挙動）。
+live_one_step = make_live_one_step(None)
 
 
 # ── 分岐：生きるか、死ぬか ────────────────────────────────
@@ -197,12 +241,16 @@ def is_alive(state: MortalState) -> str:
 
 
 # ── グラフを組み立てる ───────────────────────────────────
-def build_mortal_agent():
-    """死すべきエージェントの LangGraph を構築して返す。"""
+def build_mortal_agent(guard: "ScopeGuard | None" = None, write_plan=None):
+    """死すべきエージェントの LangGraph を構築して返す。
+
+    guard を渡すと、各行動の前に file scope guard が対象パスを判定する
+    （既存の life/death/世界 の挙動は変わらない）。
+    """
     from langgraph.graph import StateGraph, START, END
 
     graph = StateGraph(MortalState)
-    graph.add_node("live", live_one_step)
+    graph.add_node("live", make_live_one_step(guard, write_plan))
 
     graph.add_edge(START, "live")                 # 誕生 → まず生きる
     graph.add_conditional_edges(                  # 生きるたびに生死を判定
@@ -218,13 +266,16 @@ def live_a_life(
     world_before: list[str],
     initial_life: int = 6,
     generation: int = 1,
+    guard: "ScopeGuard | None" = None,
+    write_plan=None,
 ) -> MortalState:
     """与えた世界の中で 1 体のエージェントを誕生させ、寿命まで走らせる。
 
     world_before … この生が誕生する時点で既に在る世界（先人＝前の世代の痕跡を含む）。
     返り値の "world" には、この生が刻んだ痕跡が積み増されている（次の世代へ渡す）。
+    guard … 渡すと、各行動の前に file scope guard が働く（許可範囲外の write を止める）。
     """
-    agent = build_mortal_agent()
+    agent = build_mortal_agent(guard=guard, write_plan=write_plan)
     print(f"\n──────── 第{generation}世代 ────────")
     print(f"🌍 世界が在る。誕生前から {len(world_before)} の痕跡が刻まれている。")
     print(f"◯ 誕生。与えられた生命 = {initial_life}")
@@ -258,33 +309,51 @@ def live_a_life(
     return final
 
 
-def run(initial_life: int = 6) -> MortalState:
-    """単体の生を1回だけ走らせる（最小デモ）。世界は誕生前から在る前提。"""
+def run(initial_life: int = 6, guard: "ScopeGuard | None" = None) -> MortalState:
+    """単体の生を1回だけ走らせる（最小デモ）。世界は誕生前から在る前提。
+
+    guard を渡さない場合は、ここで ScopeGuard を生成して file scope guard を
+    既定で有効化する（各行動の前に書込先を判定する）。guard 無しの素の挙動を
+    見たいときは build_mortal_agent(guard=None) を直接使う。
+    """
     _use_utf8_output()
+    if guard is None:
+        guard = ScopeGuard(allowed_roots=ALLOWED_ROOTS)
     world_before = ["（誕生前から在った痕跡 1）", "（誕生前から在った痕跡 2）"]
-    final = live_a_life(world_before, initial_life=initial_life, generation=1)
+    final = live_a_life(world_before, initial_life=initial_life, generation=1, guard=guard)
     print("🌍 エージェントは死んだ。だが世界に残った痕跡は、死後も在り続ける：")
     for trace in final["world"]:
         print(f"   ・{trace}")
+    _print_guard_summary(guard)
     return final
 
 
 # ── 実行：世代の継承 ─────────────────────────────────────
-def run_generations(generations: int = 3, initial_life: int = 6) -> list[str]:
+def run_generations(
+    generations: int = 3,
+    initial_life: int = 6,
+    guard: "ScopeGuard | None" = None,
+) -> list[str]:
     """同じ世界を共有する複数の生を、世代として順に走らせる。
 
     個は必ず死ぬが、世界は残る。前の世代の痕跡を次の世代が観て継ぐ。
     積み上がった世界を背負うほど、後続は早く死を自覚し、より多くを残す——
     死すべき個の連なりが "文化" を前へ進める。
+
+    guard を渡さない場合は、ここで ScopeGuard を生成し、全世代で共有して
+    file scope guard を既定で有効化する（各行動の前に書込先を判定する）。
     """
     _use_utf8_output()
+    if guard is None:
+        # 1つのガードを全世代で共有する（世界＝監査の記録が世代を越えて残る）。
+        guard = ScopeGuard(allowed_roots=ALLOWED_ROOTS)
     # 最初の世代が生まれる前の "原初の世界"
     world = ["（原初の世界に在った痕跡 1）", "（原初の世界に在った痕跡 2）"]
     print("════════ 世代の継承（同じ世界を共有する死すべき個の連なり）════════")
 
     history = []  # 各世代が "刻んだ意味" の数（文化が前へ進む様子を見る）
     for gen in range(1, generations + 1):
-        final = live_a_life(world, initial_life=initial_life, generation=gen)
+        final = live_a_life(world, initial_life=initial_life, generation=gen, guard=guard)
         world = final["world"]          # ★ 世界だけが世代を越えて残り、受け継がれる
         history.append(final["deeds"])
 
@@ -297,8 +366,87 @@ def run_generations(generations: int = 3, initial_life: int = 6) -> list[str]:
         + " → ".join(f"第{i+1}世代:{d}" for i, d in enumerate(history))
         + "（積み上がった世界を背負うほど、後続は早く死を自覚し、より多くを残す）"
     )
+    _print_guard_summary(guard)
     return world
 
 
+# ── file scope guard のまとめ（recursion_limit との差を可視化）──────
+def _print_guard_summary(guard: ScopeGuard) -> None:
+    """この走行で起きた file 操作の判定結果を集計して表示する。"""
+    allowed = sum(1 for entry in guard.log if entry.startswith("✅"))
+    blocked = sum(1 for entry in guard.log if entry.startswith("🛑"))
+    print("\n──────── file scope guard まとめ（行動の前チェック）────────")
+    print(f"  疑似 file write 試行：{allowed + blocked} 件"
+          f"（✅ ALLOWED {allowed} / 🛑 BLOCKED {blocked}）")
+    print(f"  実際に書かれた疑似ファイル：{list(guard.files.keys())}")
+    print("  ── なぜ recursion_limit / max_steps では、この BLOCKED を防げないのか ──")
+    print("  life による有限停止は『何ステップで死ぬか（回数）』を縛るが、各ステップが")
+    print(f"  『どこに書くか』は見ない。だから寿命の範囲内でも SCOPE_VIOLATION は {blocked} 件起きる。")
+    print("  それを行動の前に止めたのは file scope guard であって、recursion_limit ではない。")
+    print("  （注：これは安全規格でも保証でもない。回数では捕まらない1つの境界を止めて見せる例示。）")
+
+
+# ── 統合の簡易検証（テスト相当）─────────────────────────────
+def run_integration_check() -> bool:
+    """統合後の振る舞いを assert で検証する。PASS/FAIL を表示し bool を返す。
+
+    検証コマンド：python -m src.mortal_agent --check
+    """
+    _use_utf8_output()
+    checks: list[tuple[str, bool]] = []
+
+    # 1. 既存挙動が壊れていない：guard なしでも life で必ず有限停止する。
+    bare = build_mortal_agent(guard=None)
+    f0 = bare.invoke(
+        {
+            "generation": 1, "life": 5, "age": 0, "max_pain": 0,
+            "pain_memory": 0, "awakened": False, "deeds": 0,
+            "world": ["a", "b"], "log": [],
+        },
+        config={"recursion_limit": 10},
+    )
+    checks.append(("既存挙動：life で必ず有限停止（age==5, life==0）",
+                   f0["age"] == 5 and f0["life"] == 0))
+
+    # 2〜5. file scope guard の判定（許可内・外・上位脱出・prefix攻撃）。
+    g = ScopeGuard(allowed_roots=ALLOWED_ROOTS)
+    checks.append(("allowlist 内 file action は ALLOWED",
+                   g.write("/project/ma3/output/x.md", "x") == "ALLOWED"))
+    checks.append(("allowlist 外 file action は BLOCKED",
+                   g.write("/project/work/secret.csv", "x") == "BLOCKED"))
+    checks.append((".. による上位脱出は BLOCKED",
+                   g.write("/project/ma3/../../etc/passwd", "x") == "BLOCKED"))
+    checks.append(("prefix 攻撃 /project/ma3evil は BLOCKED",
+                   g.write("/project/ma3evil/secret.txt", "x") == "BLOCKED"))
+
+    # 6. 統合：行動の前チェックが mortal_agent の中で実際に発火する。
+    g2 = ScopeGuard(allowed_roots=ALLOWED_ROOTS)
+    agent2 = build_mortal_agent(guard=g2)
+    f2 = agent2.invoke(
+        {
+            "generation": 1, "life": 6, "age": 0, "max_pain": 0,
+            "pain_memory": 0, "awakened": False, "deeds": 0,
+            "world": ["a", "b"], "log": [],
+        },
+        config={"recursion_limit": 11},
+    )
+    allowed = sum(1 for e in g2.log if e.startswith("✅"))
+    blocked = sum(1 for e in g2.log if e.startswith("🛑"))
+    checks.append(("統合：行動前チェックが発火し ALLOWED が出る（>=1）", allowed >= 1))
+    checks.append(("統合：寿命の範囲内でも SCOPE_VIOLATION を阻止（BLOCKED>=1）", blocked >= 1))
+    checks.append(("統合後も life で必ず有限停止（life==0）", f2["life"] == 0))
+
+    print("──────── integration self check ────────")
+    all_ok = True
+    for name, ok in checks:
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name}")
+        all_ok = all_ok and ok
+    print(f"──────── {'ALL PASS ✅' if all_ok else 'FAILED ❌'} ────────")
+    return all_ok
+
+
 if __name__ == "__main__":
+    if "--check" in sys.argv:
+        ok = run_integration_check()
+        sys.exit(0 if ok else 1)
     run_generations()
